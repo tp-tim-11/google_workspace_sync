@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "external_directory": {
+      "~/Projects/team-project/Backend/**": "allow"
+    },
+    "edit": {
+      "*": "allow",
+      "~/Projects/team-project/Backend/**": "deny"
+    },
+    "bash": {
+      "*": "allow",
+      "~/Projects/team-project/Backend/**": "ask"
+    }
+  }
+}
