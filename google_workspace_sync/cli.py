@@ -1,9 +1,10 @@
 from argparse import ArgumentParser, Namespace
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
-from .config import Settings, load_settings, require_postgres, require_sheet_id
 from .drive_sync import DriveMirrorSync
 from .google_clients import build_drive_client, build_sheets_client
+from .settings import Settings, settings
 from .sheet_sync import (
     SheetSyncService,
     ensure_resources_schema,
@@ -54,15 +55,17 @@ def build_parser() -> ArgumentParser:
 
 def run_sync(arguments: Namespace, settings: Settings) -> int:
     exit_code = 0
+    _validate_credentials_path(settings)
 
     if arguments.mode in {"drive", "all"}:
+        _require_drive_folder_id(settings)
         drive_client = build_drive_client(settings)
         hard_delete = settings.drive_hard_delete and not arguments.no_hard_delete
 
         drive_sync = DriveMirrorSync(
             drive_client=drive_client,
             source_folder_id=settings.google_drive_documents_folder_id,
-            download_root=settings.drive_download_root,
+            download_root=Path(settings.drive_download_root).expanduser(),
             recursive=settings.drive_recursive,
             hard_delete=hard_delete,
             dry_run=arguments.dry_run,
@@ -84,15 +87,16 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
         if arguments.dry_run:
             raise ValueError("Sheet sync does not support --dry-run yet.")
 
-        sheet_id = require_sheet_id(settings)
-        postgres = require_postgres(settings)
+        _require_database_settings(settings)
+        sheet_id = _require_sheet_id(settings)
+        sheet_range = settings.google_sheets_range.strip() or "Sheet1!A:E"
 
         sheets_client = build_sheets_client(settings)
         sheet_sync = SheetSyncService(
             sheets_client=sheets_client,
-            postgres=postgres,
+            settings=settings,
             spreadsheet_id=sheet_id,
-            spreadsheet_range=settings.google_sheets_range,
+            spreadsheet_range=sheet_range,
         )
         sheet_stats = sheet_sync.sync()
         print(
@@ -107,11 +111,53 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
 
 
 def run_init_db(_arguments: Namespace, settings: Settings) -> int:
-    postgres = require_postgres(settings)
-    ensure_resources_schema(postgres)
-    validate_resources_schema(postgres)
+    _validate_credentials_path(settings)
+    _require_database_settings(settings)
+    ensure_resources_schema(settings)
+    validate_resources_schema(settings)
     print("[sheet-sync] resources schema ready.")
     return 0
+
+
+def _validate_credentials_path(settings: Settings) -> None:
+    credentials_path = Path(
+        settings.google_service_account_credentials_file
+    ).expanduser()
+    if not credentials_path.exists():
+        raise ValueError(
+            f"Service account credentials file does not exist: {credentials_path}"
+        )
+
+
+def _require_drive_folder_id(settings: Settings) -> str:
+    value = settings.google_drive_documents_folder_id.strip()
+    if value == "":
+        raise ValueError("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID must be set for drive sync.")
+    return value
+
+
+def _require_sheet_id(settings: Settings) -> str:
+    value = settings.google_sheets_id.strip()
+    if value == "":
+        raise ValueError("GOOGLE_SHEETS_ID must be set for sheet sync.")
+    return value
+
+
+def _require_database_settings(settings: Settings) -> None:
+    missing: list[str] = []
+    if settings.db_host.strip() == "":
+        missing.append("db_host")
+    if settings.db_name.strip() == "":
+        missing.append("db_name")
+    if settings.db_user.strip() == "":
+        missing.append("db_user")
+    if settings.db_password.strip() == "":
+        missing.append("db_password")
+
+    if missing:
+        raise ValueError(
+            f"Database settings missing for sheet sync/init-db: {', '.join(missing)}"
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -119,7 +165,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     try:
-        settings = load_settings()
         handler: Callable[[Namespace, Settings], int] = arguments.handler
         return handler(arguments, settings)
     except Exception as error:

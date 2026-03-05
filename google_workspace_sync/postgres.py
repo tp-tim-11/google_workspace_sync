@@ -1,13 +1,14 @@
 from psycopg import Connection, connect
 
-from .config import PostgresSettings
+from .settings import Settings
 
 
-def open_postgres_connection(postgres: PostgresSettings) -> Connection:
+def open_postgres_connection(settings: Settings) -> Connection:
     return connect(
-        host=postgres.host,
-        dbname=postgres.database,
-        user=postgres.user,
-        password=postgres.password,
-        port=postgres.port,
+        host=settings.db_host,
+        dbname=settings.db_name,
+        user=settings.db_user,
+        password=settings.db_password,
+        port=settings.db_port,
+        sslmode=settings.db_sslmode,
     )

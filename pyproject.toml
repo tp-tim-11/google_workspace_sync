@@ -1,18 +1,20 @@
 [project]
 name = "google_workspace_sync"
 version = "0.1.0"
-description = "Add your description here"
+description = "One-shot pull sync for Google Drive folder mirror and Sheets sync"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "black>=25.11.0",
     "google-api-python-client>=2.187.0",
     "google-auth>=2.41.1",
     "google-auth-httplib2>=0.2.1",
     "google-auth-oauthlib>=1.2.3",
-    "ruff>=0.14.5",
-    "ty>=0.0.1a27",
+    "psycopg[binary]>=3.2.3",
+    "pydantic-settings>=2.13.1",
 ]
+
+[project.scripts]
+google-workspace-sync = "google_workspace_sync.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -20,6 +22,10 @@ dev = [
     "ruff>=0.14.5",
     "ty>=0.0.1a27",
 ]
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
 
 [tool.ruff]
 exclude = [
@@ -50,7 +56,7 @@ exclude = [
 
 # Same as Black.
 line-length = 88
-target-version = "py312"
+target-version = "py313"
 
 
 [tool.ruff.lint]
@@ -76,7 +82,6 @@ ignore = [
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex
     "G004",
-    "ANN101",
     "ANN003",
     "B904",
     "G201"
