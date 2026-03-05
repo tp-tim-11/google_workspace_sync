@@ -1,50 +1,36 @@
-import unicodedata
-from typing import cast
+from pathlib import Path
+from typing import LiteralString, cast
 
 from .google_api_protocols import SheetsService
 from .models import ResourceRow, SheetSyncStats
 from .postgres import open_postgres_connection
 from .settings import Settings
 
-CREATE_RESOURCES_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS public.resources (
-    id              bigserial PRIMARY KEY,
-    nazov           text        NOT NULL,
-    pozicia         text,
-    led_pozicia     text,
-    status          text,
-    vypozicane_komu text,
-    created_at      timestamptz NOT NULL DEFAULT now(),
-    updated_at      timestamptz NOT NULL DEFAULT now(),
-    deleted         boolean     NOT NULL DEFAULT false
-);
-"""
-
-CREATE_RESOURCES_UNIQUE_INDEX_SQL = """
-CREATE UNIQUE INDEX IF NOT EXISTS resources_nazov_unique
-ON public.resources (nazov);
-"""
-
-CREATE_RESOURCES_NOT_DELETED_INDEX_SQL = """
-CREATE INDEX IF NOT EXISTS resources_not_deleted_idx
-ON public.resources (nazov)
-WHERE deleted = false;
-"""
+INIT_DB_SQL_FILE_NAMES: tuple[str, ...] = (
+    "001_drop_objects.sql",
+    "010_function.sql",
+    "030_tables.sql",
+    "040_indexes.sql",
+    "050_trigger.sql",
+    "060_constraints.sql",
+)
 
 UPSERT_RESOURCES_SQL = """
 INSERT INTO public.resources (
     nazov,
-    pozicia,
-    led_pozicia,
+    esp,
+    pin,
+    led,
     status,
     vypozicane_komu,
     deleted
 )
-VALUES (%s, %s, %s, %s, %s, false)
+VALUES (%s, %s, %s, %s, %s, %s, false)
 ON CONFLICT (nazov)
 DO UPDATE SET
-    pozicia = EXCLUDED.pozicia,
-    led_pozicia = EXCLUDED.led_pozicia,
+    esp = EXCLUDED.esp,
+    pin = EXCLUDED.pin,
+    led = EXCLUDED.led,
     status = EXCLUDED.status,
     vypozicane_komu = EXCLUDED.vypozicane_komu,
     deleted = false,
@@ -80,10 +66,11 @@ WHERE schemaname = 'public' AND tablename = 'resources';
 """
 
 EXPECTED_RESOURCE_COLUMNS: tuple[tuple[str, str, str], ...] = (
-    ("id", "bigint", "NO"),
+    ("id", "integer", "NO"),
     ("nazov", "text", "NO"),
-    ("pozicia", "text", "YES"),
-    ("led_pozicia", "text", "YES"),
+    ("esp", "text", "YES"),
+    ("pin", "text", "YES"),
+    ("led", "text", "YES"),
     ("status", "text", "YES"),
     ("vypozicane_komu", "text", "YES"),
     ("created_at", "timestamp with time zone", "NO"),
@@ -99,30 +86,35 @@ REQUIRED_RESOURCE_INDEXES = frozenset(
     }
 )
 
-HEADER_ALIASES: dict[str, tuple[str, ...]] = {
-    "nazov": (
-        "nazov",
-        "nazov nastroja",
-        "nazov naradia",
-    ),
-    "pozicia": (
-        "pozicia",
-        "position",
-    ),
-    "led_pozicia": (
-        "led pozicia",
-        "led_pozicia",
-        "led position",
-    ),
-    "status": ("status",),
-    "vypozicane_komu": (
-        "vypozicane komu",
-        "vypozicane_komu",
-        "borrowed by",
-    ),
+CANONICAL_SHEET_HEADERS: dict[str, str] = {
+    "NAME": "nazov",
+    "ESP": "esp",
+    "PIN": "pin",
+    "LED": "led",
+    "STATUS": "status",
+    "BORROWED BY": "vypozicane_komu",
 }
 
-REQUIRED_HEADER_FIELDS = frozenset({"nazov"})
+REQUIRED_HEADER_FIELDS = frozenset(CANONICAL_SHEET_HEADERS.values())
+
+
+def _normalize_header_name(value: str) -> str:
+    normalized = value.strip().replace("_", " ").upper()
+    sanitized = "".join(
+        character if character.isalnum() or character.isspace() else " "
+        for character in normalized
+    )
+    return " ".join(sanitized.split())
+
+
+def _build_expected_header_lookup() -> dict[str, str]:
+    return {
+        _normalize_header_name(header_name): field_name
+        for header_name, field_name in CANONICAL_SHEET_HEADERS.items()
+    }
+
+
+EXPECTED_HEADER_LOOKUP = _build_expected_header_lookup()
 
 
 def ensure_resources_schema(settings: Settings) -> None:
@@ -130,9 +122,23 @@ def ensure_resources_schema(settings: Settings) -> None:
         open_postgres_connection(settings) as connection,
         connection.cursor() as cursor,
     ):
-        cursor.execute(CREATE_RESOURCES_TABLE_SQL)
-        cursor.execute(CREATE_RESOURCES_UNIQUE_INDEX_SQL)
-        cursor.execute(CREATE_RESOURCES_NOT_DELETED_INDEX_SQL)
+        for sql_path in _iter_init_sql_paths():
+            sql_text = sql_path.read_text(encoding="utf-8").strip()
+            if sql_text == "":
+                continue
+            cursor.execute(cast(LiteralString, sql_text))
+
+
+def _iter_init_sql_paths() -> tuple[Path, ...]:
+    sql_directory = Path(__file__).resolve().parent / "sql" / "init_db"
+    sql_paths = tuple(sql_directory / name for name in INIT_DB_SQL_FILE_NAMES)
+
+    missing_paths = [path for path in sql_paths if not path.exists()]
+    if missing_paths:
+        missing_list = ", ".join(str(path) for path in missing_paths)
+        raise FileNotFoundError(f"Missing init-db SQL files: {missing_list}")
+
+    return sql_paths
 
 
 def validate_resources_schema(settings: Settings) -> None:
@@ -197,30 +203,6 @@ def _validate_resource_columns(
         message_parts.append("Mismatched: " + "; ".join(mismatched_columns) + ".")
 
     raise ValueError(" ".join(message_parts))
-
-
-def _normalize_header_name(value: str) -> str:
-    lowered = value.strip().lower().replace("_", " ")
-    ascii_normalized = (
-        unicodedata.normalize("NFKD", lowered).encode("ascii", "ignore").decode("ascii")
-    )
-    sanitized = "".join(
-        character if character.isalnum() or character.isspace() else " "
-        for character in ascii_normalized
-    )
-    return " ".join(sanitized.split())
-
-
-def _build_header_alias_lookup() -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for field_name, field_aliases in HEADER_ALIASES.items():
-        for alias in field_aliases:
-            normalized = _normalize_header_name(alias)
-            aliases.setdefault(normalized, field_name)
-    return aliases
-
-
-HEADER_ALIAS_LOOKUP = _build_header_alias_lookup()
 
 
 class SheetSyncService:
@@ -302,17 +284,22 @@ class SheetSyncService:
             if normalized == "":
                 continue
 
-            field_name = HEADER_ALIAS_LOOKUP.get(normalized)
+            field_name = EXPECTED_HEADER_LOOKUP.get(normalized)
             if field_name is None:
                 continue
 
             header_index_map.setdefault(field_name, index)
 
-        missing_required = sorted(REQUIRED_HEADER_FIELDS - set(header_index_map))
-        if missing_required:
+        missing_required_fields = sorted(REQUIRED_HEADER_FIELDS - set(header_index_map))
+        if missing_required_fields:
+            missing_headers = [
+                header_name
+                for header_name, field_name in CANONICAL_SHEET_HEADERS.items()
+                if field_name in missing_required_fields
+            ]
             raise ValueError(
                 "Sheet sync failed: missing required headers: "
-                f"{', '.join(missing_required)}. "
+                f"{', '.join(missing_headers)}. "
                 "Refusing to modify database."
             )
 
@@ -335,8 +322,9 @@ class SheetSyncService:
                 continue
 
             nazov = self._cell_by_header(row, header_index_map, "nazov")
-            pozicia = self._cell_by_header(row, header_index_map, "pozicia")
-            led_pozicia = self._cell_by_header(row, header_index_map, "led_pozicia")
+            esp = self._cell_by_header(row, header_index_map, "esp")
+            pin = self._cell_by_header(row, header_index_map, "pin")
+            led = self._cell_by_header(row, header_index_map, "led")
             status = self._cell_by_header(row, header_index_map, "status")
             vypozicane_komu = self._cell_by_header(
                 row,
@@ -350,8 +338,9 @@ class SheetSyncService:
 
             resources_by_name[nazov] = ResourceRow(
                 nazov=nazov,
-                pozicia=pozicia or None,
-                led_pozicia=led_pozicia or None,
+                esp=esp or None,
+                pin=pin or None,
+                led=led or None,
                 status=status or None,
                 vypozicane_komu=vypozicane_komu or None,
             )
@@ -362,8 +351,9 @@ class SheetSyncService:
         upsert_params = [
             (
                 row.nazov,
-                row.pozicia,
-                row.led_pozicia,
+                row.esp,
+                row.pin,
+                row.led,
                 row.status,
                 row.vypozicane_komu,
             )

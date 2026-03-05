@@ -8,13 +8,26 @@ class GoogleExecuteRequest(Protocol):
 class DriveFilesApi(Protocol):
     def list(self, **kwargs: object) -> GoogleExecuteRequest: ...
 
+    def get(self, **kwargs: object) -> GoogleExecuteRequest: ...
+
     def export(self, **kwargs: object) -> object: ...
 
     def get_media(self, **kwargs: object) -> object: ...
 
 
+class DriveChangesApi(Protocol):
+    def getStartPageToken(  # noqa: N802
+        self,
+        **kwargs: object,
+    ) -> GoogleExecuteRequest: ...
+
+    def list(self, **kwargs: object) -> GoogleExecuteRequest: ...
+
+
 class DriveService(Protocol):
     def files(self) -> DriveFilesApi: ...
+
+    def changes(self) -> DriveChangesApi: ...
 
 
 class SheetsValuesApi(Protocol):
