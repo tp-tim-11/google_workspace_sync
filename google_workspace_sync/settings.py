@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     google_sheets_id: str = ""
     google_sheets_range: str = ""
     drive_download_root: str = "./drive_mirror"
+    drive_state_file: str = "./drive_sync_state.json"
     drive_recursive: bool = True
     drive_hard_delete: bool = True
 

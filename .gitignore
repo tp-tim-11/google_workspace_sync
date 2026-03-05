@@ -12,6 +12,7 @@ wheels/
 # Local sync output
 drive_mirror/
 logs/
+drive_sync_state.json
 
 # Local environment files
 .env

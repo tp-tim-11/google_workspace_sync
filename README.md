@@ -5,16 +5,23 @@ Cron-friendly pull sync for Google Workspace:
 - Optionally syncs a Google Sheet into PostgreSQL `resources` table.
 
 This implementation is pull-based. It does not rely on Drive webhooks.
-It compares Drive `modifiedTime` with local file mtime and downloads only changed files.
+Drive sync uses the Drive Changes API with a persisted token/state file.
 
 Sheet sync behavior:
-- Parses rows by header names (not fixed column positions).
-- Requires a `nazov`-equivalent header (for example `Názov nástroja`).
+- Uses strict canonical headers.
+- Requires all headers: `NAME`, `ESP`, `PIN`, `LED`, `STATUS`, `BORROWED BY`.
+- Ignores extra/unrecognized columns.
+- Column values may be empty; only header presence is required.
 - Soft-deletes missing tools by setting `deleted=true`.
 - Fails safely if the sheet fetch is empty or the header row is missing.
 
+Recommended sheet header template:
+- `NAME, ESP, PIN, LED, STATUS, BORROWED BY`
+
 Drive sync behavior:
-- Recursively scans the configured documents folder ID.
+- Uses `changes.list` page tokens persisted in `DRIVE_STATE_FILE`.
+- Falls back to full reconcile when token is missing/invalid.
+- Recursively scans the configured documents folder ID for initial/full reconcile.
 - Flattens files from nested Drive subfolders directly into `DRIVE_DOWNLOAD_ROOT`.
 
 ## Tooling
@@ -35,6 +42,7 @@ Required for Drive sync:
 
 Optional Drive settings:
 - `DRIVE_DOWNLOAD_ROOT` (default: `./drive_mirror`)
+- `DRIVE_STATE_FILE` (default: `./drive_sync_state.json`)
 - `DRIVE_RECURSIVE` (default: `true`)
 - `DRIVE_HARD_DELETE` (default: `true`)
 
@@ -46,7 +54,7 @@ Required for Sheet sync:
 - `DB_PASSWORD`
 
 Optional Sheet settings:
-- `GOOGLE_SHEETS_RANGE` (default: `Sheet1!A:E`)
+ - `GOOGLE_SHEETS_RANGE` (default: `Sheet1!A:F`)
 - `DB_PORT` (default: `5432`)
 - `DB_SSLMODE` (default: `prefer`)
 
@@ -56,6 +64,12 @@ Run Drive pull sync:
 
 ```bash
 uv run google-workspace-sync sync --mode drive
+```
+
+Force full Drive reconcile (ignore token state for one run):
+
+```bash
+uv run google-workspace-sync sync --mode drive --full-reconcile
 ```
 
 Run Sheet sync:
@@ -70,11 +84,23 @@ Run both:
 uv run google-workspace-sync sync --mode all
 ```
 
-Initialize DB schema for Sheet sync:
+Reset and recreate DB schema for Sheet sync (destructive):
 
 ```bash
 uv run google-workspace-sync init-db
 ```
+
+Alias:
+
+```bash
+uv run google-workspace-sync init
+```
+
+`init-db`/`init` is the only command that executes schema reset SQL.
+Normal sync commands never run the full schema reset.
+
+The schema SQL is split into editable files under
+`google_workspace_sync/sql/init_db/`.
 
 ## Cron example
 

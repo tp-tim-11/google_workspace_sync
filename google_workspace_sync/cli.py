@@ -42,11 +42,17 @@ def build_parser() -> ArgumentParser:
         action="store_true",
         help="Disable hard mirror delete for this run.",
     )
+    sync_parser.add_argument(
+        "--full-reconcile",
+        action="store_true",
+        help="Force full Drive reconcile instead of token-based incremental sync.",
+    )
     sync_parser.set_defaults(handler=run_sync)
 
     init_db_parser = subparsers.add_parser(
         "init-db",
-        help="Create resources table/indexes for sheet sync.",
+        aliases=("init",),
+        help="Reset and recreate the PostgreSQL sync schema.",
     )
     init_db_parser.set_defaults(handler=run_init_db)
 
@@ -66,9 +72,11 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
             drive_client=drive_client,
             source_folder_id=settings.google_drive_documents_folder_id,
             download_root=Path(settings.drive_download_root).expanduser(),
+            state_file=Path(settings.drive_state_file).expanduser(),
             recursive=settings.drive_recursive,
             hard_delete=hard_delete,
             dry_run=arguments.dry_run,
+            force_full_reconcile=arguments.full_reconcile,
         )
         drive_stats = drive_sync.sync()
         print(
@@ -89,7 +97,7 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
 
         _require_database_settings(settings)
         sheet_id = _require_sheet_id(settings)
-        sheet_range = settings.google_sheets_range.strip() or "Sheet1!A:E"
+        sheet_range = settings.google_sheets_range.strip() or "Sheet1!A:F"
 
         sheets_client = build_sheets_client(settings)
         sheet_sync = SheetSyncService(
@@ -111,11 +119,10 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
 
 
 def run_init_db(_arguments: Namespace, settings: Settings) -> int:
-    _validate_credentials_path(settings)
     _require_database_settings(settings)
     ensure_resources_schema(settings)
     validate_resources_schema(settings)
-    print("[sheet-sync] resources schema ready.")
+    print("[sheet-sync] database schema reset and ready.")
     return 0
 
 

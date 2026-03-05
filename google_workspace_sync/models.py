@@ -14,8 +14,9 @@ class DriveFile:
 @dataclass(frozen=True, slots=True)
 class ResourceRow:
     nazov: str
-    pozicia: str | None
-    led_pozicia: str | None
+    esp: str | None
+    pin: str | None
+    led: str | None
     status: str | None
     vypozicane_komu: str | None
 
