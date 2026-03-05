@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local sync output
+drive_mirror/
+logs/
+
+# Local environment files
+.env

@@ -1,10 +1,10 @@
 import unicodedata
 from typing import cast
 
-from .config import PostgresSettings
 from .google_api_protocols import SheetsService
 from .models import ResourceRow, SheetSyncStats
 from .postgres import open_postgres_connection
+from .settings import Settings
 
 CREATE_RESOURCES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS public.resources (
@@ -125,9 +125,9 @@ HEADER_ALIASES: dict[str, tuple[str, ...]] = {
 REQUIRED_HEADER_FIELDS = frozenset({"nazov"})
 
 
-def ensure_resources_schema(postgres: PostgresSettings) -> None:
+def ensure_resources_schema(settings: Settings) -> None:
     with (
-        open_postgres_connection(postgres) as connection,
+        open_postgres_connection(settings) as connection,
         connection.cursor() as cursor,
     ):
         cursor.execute(CREATE_RESOURCES_TABLE_SQL)
@@ -135,9 +135,9 @@ def ensure_resources_schema(postgres: PostgresSettings) -> None:
         cursor.execute(CREATE_RESOURCES_NOT_DELETED_INDEX_SQL)
 
 
-def validate_resources_schema(postgres: PostgresSettings) -> None:
+def validate_resources_schema(settings: Settings) -> None:
     with (
-        open_postgres_connection(postgres) as connection,
+        open_postgres_connection(settings) as connection,
         connection.cursor() as cursor,
     ):
         cursor.execute(READ_RESOURCES_COLUMNS_SQL)
@@ -227,12 +227,12 @@ class SheetSyncService:
     def __init__(
         self,
         sheets_client: SheetsService,
-        postgres: PostgresSettings,
+        settings: Settings,
         spreadsheet_id: str,
         spreadsheet_range: str,
     ) -> None:
         self.sheets_client = sheets_client
-        self.postgres = postgres
+        self.settings = settings
         self.spreadsheet_id = spreadsheet_id
         self.spreadsheet_range = spreadsheet_range
 
@@ -242,7 +242,7 @@ class SheetSyncService:
         header_index_map = self._build_header_index_map(header_row)
         resources, skipped_rows = self._parse_resource_rows(values, header_index_map)
 
-        validate_resources_schema(self.postgres)
+        validate_resources_schema(self.settings)
         upserted_rows, soft_deleted_rows = self._persist_rows(resources)
 
         fetched_rows = len(values) - 1
@@ -372,7 +372,7 @@ class SheetSyncService:
         seen_names = [row.nazov for row in rows]
 
         with (
-            open_postgres_connection(self.postgres) as connection,
+            open_postgres_connection(self.settings) as connection,
             connection.cursor() as cursor,
         ):
             if upsert_params:

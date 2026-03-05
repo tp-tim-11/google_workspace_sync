@@ -3,8 +3,8 @@ from typing import cast
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-from .config import Settings
 from .google_api_protocols import DriveService, SheetsService
+from .settings import Settings
 
 _GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
