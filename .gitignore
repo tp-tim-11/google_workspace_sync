@@ -16,4 +16,8 @@ drive_sync_state.json
 
 # Local environment files
 .env
-./credentials
+.env.local
+
+# Secrets and local tooling state
+credentials/
+opencode.json
