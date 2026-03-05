@@ -111,3 +111,17 @@ Every 5 minutes, mirror Drive folder with hard delete:
 ```
 
 If you need to keep local leftovers for one run, pass `--no-hard-delete`.
+
+Managed cron helper scripts:
+
+```bash
+./scripts/add_google_sync_cron.sh
+./scripts/remove_google_sync_cron.sh
+```
+
+Install for another user (via sudo):
+
+```bash
+./scripts/add_google_sync_cron.sh --user your-user
+./scripts/remove_google_sync_cron.sh --user your-user
+```
