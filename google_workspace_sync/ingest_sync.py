@@ -3,6 +3,8 @@ import json
 import os
 import re
 import subprocess
+import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,68 +19,6 @@ PRIMARY_INGEST_PY = (
     "from kluky_mcp.tools.uc02_utils.pageIndexPipeline import ingest_with_pageindex; "
     "ingest_with_pageindex(sys.argv[1], doc_key=sys.argv[2])"
 )
-
-FALLBACK_INGEST_PY = """
-import sys
-from pathlib import Path
-
-from kluky_mcp.db import get_db_connection
-from kluky_mcp.tools.uc02_utils.pageIndexUtils import (
-    DocUnit,
-    PageIndexStore,
-    convert_to_markdown,
-    stable_doc_id_from_doc_key,
-)
-
-input_path = sys.argv[1]
-doc_key = sys.argv[2]
-
-doc_id = stable_doc_id_from_doc_key(doc_key)
-path_obj = Path(input_path)
-manual_name = path_obj.name
-source_type = path_obj.suffix.lower().lstrip('.') or 'unknown'
-
-parse_error = ''
-text_payload = ''
-try:
-    text_payload = (convert_to_markdown(input_path) or '').strip()
-except Exception as error:
-    parse_error = str(error)
-
-if text_payload == '':
-    text_payload = '[FALLBACK_INGEST] Unable to extract text content from source file.'
-
-if parse_error:
-    text_payload = f"{text_payload}\\n\\n[parse_error] {parse_error}".strip()
-
-summary = text_payload
-if len(summary) > 240:
-    summary = summary[:239].rstrip() + '...'
-
-unit = DocUnit(
-    unit_type='chunk',
-    unit_no=1,
-    start_page=None,
-    end_page=None,
-    title=manual_name,
-    heading_path=None,
-    summary=summary,
-    text=text_payload,
-)
-
-conn = get_db_connection()
-store = PageIndexStore(conn)
-try:
-    store.reindex_doc(
-        doc_id=doc_id,
-        manual_name=manual_name,
-        source_path=input_path,
-        source_type=source_type,
-        units=[unit],
-    )
-finally:
-    conn.close()
-""".strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,55 +35,18 @@ class IngestedFileState:
     modified_time: str
 
 
-def _primary_disable_reason(stdout_text: str, stderr_text: str) -> str | None:
-    haystack = f"{stdout_text}\n{stderr_text}".lower()
-
-    if "authentication error" in haystack or "error code: 401" in haystack:
-        return "authentication failed"
-    if "missing api key" in haystack:
-        return "missing api key"
-    if "process timed out" in haystack:
-        return "process timeout"
-
-    return None
+@dataclass(frozen=True, slots=True)
+class FileIngestResult:
+    file_id: str
+    entry: DriveManifestEntry
+    success: bool
+    elapsed_seconds: float
 
 
 def _redact_secrets(value: str) -> str:
     redacted = re.sub(r"sk-[A-Za-z0-9_-]+", "[REDACTED_API_KEY]", value)
     redacted = re.sub(r"sk_[A-Za-z0-9_-]+", "[REDACTED_API_KEY]", redacted)
     return redacted
-
-
-def _read_env_file(file_path: Path) -> dict[str, str]:
-    if not file_path.exists() or not file_path.is_file():
-        return {}
-
-    loaded: dict[str, str] = {}
-    for raw_line in file_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if line == "" or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        env_key = key.strip()
-        env_value = value.strip()
-        if env_key == "":
-            continue
-
-        if (
-            len(env_value) >= 2
-            and env_value[0] == env_value[-1]
-            and env_value[0] in {'"', "'"}
-        ):
-            env_value = env_value[1:-1]
-
-        loaded[env_key] = env_value
-
-    return loaded
 
 
 def load_drive_manifest(state_file: Path) -> dict[str, DriveManifestEntry]:
@@ -190,7 +93,6 @@ class Uc2IngestService:
         self.state_file = Path(settings.drive_ingest_state_file).expanduser()
         self.kluky_project_root = Path(settings.kluky_mcp_project_root).expanduser()
         self.command_cwd = Path.cwd().resolve()
-        self.kluky_env_file = self.kluky_project_root / ".env"
         if not self.kluky_project_root.exists():
             raise ValueError(
                 f"KLUKY_MCP_PROJECT_ROOT does not exist: {self.kluky_project_root}"
@@ -199,7 +101,6 @@ class Uc2IngestService:
             raise ValueError(
                 f"KLUKY_MCP_PROJECT_ROOT is not a directory: {self.kluky_project_root}"
             )
-        self._primary_ingest_disabled_reason: str | None = None
 
     def sync(
         self,
@@ -227,8 +128,15 @@ class Uc2IngestService:
         self._truncate_doc_units()
 
         next_state: dict[str, IngestedFileState] = {}
-        for file_id, entry in sorted(current_manifest.items()):
-            if self._run_kluky_ingest(entry, file_id):
+        ingest_results = self._ingest_manifest_entries(
+            sorted(current_manifest.items()),
+            phase_label="full-reconcile",
+        )
+
+        for ingest_result in ingest_results:
+            file_id = ingest_result.file_id
+            entry = ingest_result.entry
+            if ingest_result.success:
                 stats.ingested_files += 1
                 doc_id = _stable_doc_id_from_doc_key(file_id)
                 next_state[file_id] = IngestedFileState(
@@ -271,9 +179,16 @@ class Uc2IngestService:
         }
 
         ingest_file_ids = sorted(changed_file_ids | retry_file_ids)
-        for file_id in ingest_file_ids:
-            current_entry = current_manifest[file_id]
-            if self._run_kluky_ingest(current_entry, file_id):
+
+        ingest_results = self._ingest_manifest_entries(
+            [(file_id, current_manifest[file_id]) for file_id in ingest_file_ids],
+            phase_label="incremental",
+        )
+
+        for ingest_result in ingest_results:
+            file_id = ingest_result.file_id
+            current_entry = ingest_result.entry
+            if ingest_result.success:
                 stats.ingested_files += 1
                 doc_id = _stable_doc_id_from_doc_key(file_id)
                 ingest_state[file_id] = IngestedFileState(
@@ -295,81 +210,119 @@ class Uc2IngestService:
             )
             return False
 
-        if (
-            not self._is_text_like_file(input_path)
-            and self._primary_ingest_disabled_reason is None
-        ):
-            primary_command = [
-                "uv",
-                "run",
-                "--project",
-                str(self.kluky_project_root),
-                "python",
-                "-c",
-                PRIMARY_INGEST_PY,
-                str(input_path),
-                file_id,
-            ]
-
-            primary = self._run_kluky_command(primary_command)
-            if primary.returncode == 0:
-                return True
-
-            stdout_text = primary.stdout.strip()
-            stderr_text = primary.stderr.strip()
-            redacted_stdout = _redact_secrets(stdout_text)
-            redacted_stderr = _redact_secrets(stderr_text)
-            print(
-                "[uc2-ingest] Ingest failed for "
-                f"{entry.local_path} ({file_id}). "
-                f"exit={primary.returncode}"
-            )
-            if redacted_stdout:
-                print(f"[uc2-ingest] stdout: {redacted_stdout}")
-            if redacted_stderr:
-                print(f"[uc2-ingest] stderr: {redacted_stderr}")
-
-            disable_reason = _primary_disable_reason(stdout_text, stderr_text)
-            if disable_reason is not None:
-                self._primary_ingest_disabled_reason = disable_reason
-                print(
-                    "[uc2-ingest] Disabling PageIndex primary ingest "
-                    f"for this run: {disable_reason}."
-                )
-
-        fallback_command = [
+        primary_command = [
             "uv",
             "run",
             "--project",
             str(self.kluky_project_root),
             "python",
             "-c",
-            FALLBACK_INGEST_PY,
+            PRIMARY_INGEST_PY,
             str(input_path),
             file_id,
         ]
-        fallback = self._run_kluky_command(fallback_command)
-        if fallback.returncode == 0:
-            print(
-                "[uc2-ingest] Fallback ingest succeeded for "
-                f"{entry.local_path} ({file_id})."
-            )
+        primary = self._run_kluky_command(primary_command)
+        if primary.returncode == 0:
             return True
 
-        fallback_stdout = fallback.stdout.strip()
-        fallback_stderr = fallback.stderr.strip()
-        redacted_fallback_stdout = _redact_secrets(fallback_stdout)
-        redacted_fallback_stderr = _redact_secrets(fallback_stderr)
+        stdout_text = primary.stdout.strip()
+        stderr_text = primary.stderr.strip()
+        redacted_stdout = _redact_secrets(stdout_text)
+        redacted_stderr = _redact_secrets(stderr_text)
         print(
-            "[uc2-ingest] Fallback ingest failed for "
+            "[uc2-ingest] Ingest failed for "
             f"{entry.local_path} ({file_id}). "
-            f"exit={fallback.returncode}"
+            f"exit={primary.returncode}"
         )
-        if redacted_fallback_stdout:
-            print(f"[uc2-ingest] fallback stdout: {redacted_fallback_stdout}")
-        if redacted_fallback_stderr:
-            print(f"[uc2-ingest] fallback stderr: {redacted_fallback_stderr}")
+        if redacted_stdout:
+            print(f"[uc2-ingest] stdout: {redacted_stdout}")
+        if redacted_stderr:
+            print(f"[uc2-ingest] stderr: {redacted_stderr}")
         return False
+
+    def _ingest_manifest_entries(
+        self,
+        entries: list[tuple[str, DriveManifestEntry]],
+        *,
+        phase_label: str,
+    ) -> list[FileIngestResult]:
+        if not entries:
+            return []
+
+        worker_count = max(1, self.settings.drive_ingest_workers)
+        worker_count = min(worker_count, len(entries))
+        total = len(entries)
+        print(f"[uc2-ingest] phase={phase_label} files={total} workers={worker_count}")
+
+        results: list[FileIngestResult] = []
+        if worker_count == 1:
+            for index, (file_id, entry) in enumerate(entries, start=1):
+                print(
+                    "[uc2-ingest] "
+                    f"started {index}/{total}: {entry.local_path} ({file_id})"
+                )
+                started_at = time.monotonic()
+                success = self._run_kluky_ingest(entry, file_id)
+                elapsed_seconds = time.monotonic() - started_at
+                status_label = "ok" if success else "failed"
+                print(
+                    "[uc2-ingest] "
+                    f"finished {index}/{total}: {entry.local_path} "
+                    f"status={status_label} elapsed={elapsed_seconds:.1f}s"
+                )
+                results.append(
+                    FileIngestResult(
+                        file_id=file_id,
+                        entry=entry,
+                        success=success,
+                        elapsed_seconds=elapsed_seconds,
+                    )
+                )
+            return results
+
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_map: dict[
+                Future[tuple[bool, float]], tuple[str, DriveManifestEntry]
+            ] = {}
+            for index, (file_id, entry) in enumerate(entries, start=1):
+                print(
+                    "[uc2-ingest] "
+                    f"queued {index}/{total}: {entry.local_path} ({file_id})"
+                )
+                future = executor.submit(self._run_kluky_ingest_timed, entry, file_id)
+                future_map[future] = (file_id, entry)
+
+            completed = 0
+            for future in as_completed(future_map):
+                completed += 1
+                file_id, entry = future_map[future]
+                success, elapsed_seconds = future.result()
+                status_label = "ok" if success else "failed"
+                print(
+                    "[uc2-ingest] "
+                    f"finished {completed}/{total}: {entry.local_path} "
+                    f"status={status_label} elapsed={elapsed_seconds:.1f}s"
+                )
+                results.append(
+                    FileIngestResult(
+                        file_id=file_id,
+                        entry=entry,
+                        success=success,
+                        elapsed_seconds=elapsed_seconds,
+                    )
+                )
+
+        return results
+
+    def _run_kluky_ingest_timed(
+        self,
+        entry: DriveManifestEntry,
+        file_id: str,
+    ) -> tuple[bool, float]:
+        started_at = time.monotonic()
+        success = self._run_kluky_ingest(entry, file_id)
+        elapsed_seconds = time.monotonic() - started_at
+        return success, elapsed_seconds
 
     def _run_kluky_command(
         self,
@@ -409,27 +362,19 @@ class Uc2IngestService:
                 stderr=stderr_text + "\nProcess timed out after 240 seconds.",
             )
 
-    def _is_text_like_file(self, input_path: Path) -> bool:
-        text_like_extensions = {
-            ".txt",
-            ".md",
-            ".markdown",
-            ".csv",
-            ".tsv",
-            ".json",
-            ".xml",
-            ".html",
-            ".htm",
-            ".log",
-        }
-        return input_path.suffix.lower() in text_like_extensions
-
     def _build_kluky_env(self) -> dict[str, str]:
         env = dict(os.environ)
         env.pop("VIRTUAL_ENV", None)
-
-        for key, value in _read_env_file(self.kluky_env_file).items():
-            env.setdefault(key, value)
+        for key in (
+            "open_ai_api_key",
+            "OPENAI_API_KEY",
+            "CHATGPT_API_KEY",
+            "open_ai_api_base",
+            "OPENAI_BASE_URL",
+            "OPENAI_API_BASE",
+            "PAGEINDEX_MODEL",
+        ):
+            env.pop(key, None)
 
         env["DB_HOST"] = self.settings.db_host
         env["DB_NAME"] = self.settings.db_name

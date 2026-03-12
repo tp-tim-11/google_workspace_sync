@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     drive_hard_delete: bool = True
     drive_ingest_enabled: bool = True
     drive_ingest_state_file: str = "./uc2_ingest_state.json"
+    drive_ingest_workers: int = 2
     kluky_mcp_project_root: str = "../kluky_mcp"
 
     db_host: str = "aws-1-eu-west-1.pooler.supabase.com"

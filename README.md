@@ -25,10 +25,12 @@ Drive sync behavior:
 - Falls back to full reconcile when token is missing/invalid.
 - Recursively scans the configured documents folder ID for initial/full reconcile.
 - Preserves nested Drive folder structure under `DRIVE_DOWNLOAD_ROOT`.
+- Exports Google-native files (Docs/Sheets/Slides) as PDF into the local mirror.
 - Runs UC2 ingest on every successful Drive sync when `DRIVE_INGEST_ENABLED=true`.
 - On full reconcile, truncates `doc_units` and re-ingests all currently mirrored files.
 - On incremental sync, ingests changed/new files and deletes `doc_units` entries for removed files.
-- If PageIndex ingest fails for a file, falls back to a single-chunk `doc_units` ingest for that file.
+- Uses only primary `kluky_mcp` PageIndex ingest; any ingest failure is reported as failure.
+- Logs ingest queue/start/finish per file with elapsed time.
 - UC2 ingest subprocess runs in the current working directory (where you execute the command).
 
 ## Tooling
@@ -54,6 +56,7 @@ Optional Drive settings:
 - `DRIVE_HARD_DELETE` (default: `true`)
 - `DRIVE_INGEST_ENABLED` (default: `true`)
 - `DRIVE_INGEST_STATE_FILE` (default: `./uc2_ingest_state.json`)
+- `DRIVE_INGEST_WORKERS` (default: `2`)
 - `KLUKY_MCP_PROJECT_ROOT` (default: `../kluky_mcp`)
 
 Required for Drive ingest when `DRIVE_INGEST_ENABLED=true`:

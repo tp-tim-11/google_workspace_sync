@@ -15,18 +15,16 @@ GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 GOOGLE_APPS_PREFIX = "application/vnd.google-apps."
 
 GOOGLE_EXPORT_MIME_MAP = {
-    "application/vnd.google-apps.document": "text/plain",
-    "application/vnd.google-apps.spreadsheet": "text/csv",
+    "application/vnd.google-apps.document": "application/pdf",
+    "application/vnd.google-apps.spreadsheet": "application/pdf",
     "application/vnd.google-apps.presentation": "application/pdf",
 }
 
 EXPORT_EXTENSION_BY_MIME = {
-    "text/plain": ".txt",
-    "text/csv": ".csv",
     "application/pdf": ".pdf",
 }
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 CHANGES_PAGE_SIZE = 100
 
 
