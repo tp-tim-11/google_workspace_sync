@@ -40,18 +40,48 @@ CREATE TABLE public.repair_records (
     CONSTRAINT repair_records_pkey PRIMARY KEY (id)
 );
 
+CREATE TYPE public.resource_status AS ENUM (
+    'AVAILABLE',
+    'BORROWED',
+    'LOST'
+);
+
 CREATE TABLE public.resources (
     id serial NOT NULL,
-    nazov text NOT NULL,
+    name text NOT NULL,
     esp text,
     pin text,
     led text,
-    status text,
-    vypozicane_komu text,
+    status public.resource_status,
+    borrowed_by text,
     created_at timestamptz DEFAULT now() NOT NULL,
     updated_at timestamptz DEFAULT now() NOT NULL,
     deleted boolean DEFAULT false NOT NULL,
     CONSTRAINT resources_pkey PRIMARY KEY (id)
+);
+
+CREATE TABLE public.doc_units (
+    id bigserial NOT NULL,
+    doc_id text NOT NULL,
+    manual_name text NOT NULL,
+    source_path text NOT NULL,
+    source_type text NOT NULL,
+    unit_type text NOT NULL,
+    unit_no integer,
+    start_page integer,
+    end_page integer,
+    title text,
+    heading_path text,
+    summary text,
+    text text NOT NULL,
+    created_at timestamptz DEFAULT now(),
+    search_vector tsvector GENERATED ALWAYS AS (
+        to_tsvector(
+            'simple',
+            coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' || coalesce(text, '')
+        )
+    ) STORED,
+    CONSTRAINT doc_units_pkey PRIMARY KEY (id)
 );
 
 CREATE TABLE public.users (

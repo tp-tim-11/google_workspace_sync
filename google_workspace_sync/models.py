@@ -13,20 +13,28 @@ class DriveFile:
 
 @dataclass(frozen=True, slots=True)
 class ResourceRow:
-    nazov: str
+    name: str
     esp: str | None
     pin: str | None
     led: str | None
     status: str | None
-    vypozicane_komu: str | None
+    borrowed_by: str | None
 
 
 @dataclass(slots=True)
 class DriveSyncStats:
+    sync_mode: str = "incremental"
     discovered_files: int = 0
     downloaded_files: int = 0
     skipped_files: int = 0
     deleted_files: int = 0
+    failed_files: int = 0
+
+
+@dataclass(slots=True)
+class IngestSyncStats:
+    ingested_files: int = 0
+    deleted_docs: int = 0
     failed_files: int = 0
 
 

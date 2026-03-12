@@ -14,13 +14,17 @@ class Settings(BaseSettings):
     drive_state_file: str = "./drive_sync_state.json"
     drive_recursive: bool = True
     drive_hard_delete: bool = True
+    drive_ingest_enabled: bool = True
+    drive_ingest_state_file: str = "./uc2_ingest_state.json"
+    kluky_mcp_project_root: str = "../kluky_mcp"
 
-    db_host: str = ""
+    db_host: str = "aws-1-eu-west-1.pooler.supabase.com"
     db_port: int = 5432
     db_name: str = "postgres"
-    db_user: str = "postgres"
+    db_user: str = "postgres.szejlmlpxxinjwgcpqqp"
     db_password: str = ""
     db_sslmode: str = "prefer"
+    db_pool_mode: str = "session"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 

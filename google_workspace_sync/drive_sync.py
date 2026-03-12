@@ -26,7 +26,7 @@ EXPORT_EXTENSION_BY_MIME = {
     "application/pdf": ".pdf",
 }
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 CHANGES_PAGE_SIZE = 100
 
 
@@ -77,11 +77,11 @@ class DriveMirrorSync:
         self.hard_delete = hard_delete
         self.dry_run = dry_run
         self.force_full_reconcile = force_full_reconcile
-        self._folder_membership_cache: dict[str, bool] = {}
+        self._folder_path_cache: dict[str, tuple[str, ...] | None] = {}
 
     def sync(self) -> DriveSyncStats:
         self.download_root.mkdir(parents=True, exist_ok=True)
-        self._folder_membership_cache = {}
+        self._folder_path_cache = {}
 
         state = self._load_state_safely()
         if (
@@ -109,7 +109,7 @@ class DriveMirrorSync:
         self,
         previous_state: DriveSyncState | None,
     ) -> DriveSyncStats:
-        stats = DriveSyncStats()
+        stats = DriveSyncStats(sync_mode="full_reconcile")
         previous_files = previous_state.files if previous_state is not None else {}
         working_files = dict(previous_files)
 
@@ -152,7 +152,7 @@ class DriveMirrorSync:
         return stats
 
     def _run_incremental_sync(self, state: DriveSyncState) -> DriveSyncStats:
-        stats = DriveSyncStats()
+        stats = DriveSyncStats(sync_mode="incremental")
         working_files = dict(state.files)
         page_token = state.page_token
 
@@ -258,7 +258,8 @@ class DriveMirrorSync:
         if metadata.mime_type == GOOGLE_FOLDER_MIME_TYPE:
             return True
 
-        if not self._is_within_source_folder(metadata.parents):
+        folder_parts = self._resolve_file_folder_parts(metadata.parents)
+        if folder_parts is None:
             stats.deleted_files += self._remove_from_manifest(file_id, manifest)
             return False
 
@@ -267,7 +268,7 @@ class DriveMirrorSync:
             name=metadata.name,
             mime_type=metadata.mime_type,
             modified_time=metadata.modified_time,
-            folder_parts=(),
+            folder_parts=folder_parts,
         )
         self._sync_single_file(drive_file, manifest, stats)
         return False
@@ -320,7 +321,10 @@ class DriveMirrorSync:
         manifest: dict[str, TrackedFileState],
     ) -> Path:
         filename = self._build_local_filename(drive_file)
-        candidate = Path(filename)
+        if drive_file.folder_parts:
+            candidate = Path(*drive_file.folder_parts) / filename
+        else:
+            candidate = Path(filename)
 
         used_paths = {
             Path(entry.local_path)
@@ -330,14 +334,17 @@ class DriveMirrorSync:
         if candidate not in used_paths:
             return candidate
 
-        path_obj = Path(filename)
+        path_obj = candidate
         stem = path_obj.stem
         suffix = path_obj.suffix
         candidate = Path(f"{stem}__{drive_file.file_id}{suffix}")
+        candidate = path_obj.parent / candidate
         duplicate_index = 1
 
         while candidate in used_paths:
-            candidate = Path(f"{stem}__{drive_file.file_id}_{duplicate_index}{suffix}")
+            candidate = path_obj.parent / (
+                f"{stem}__{drive_file.file_id}_{duplicate_index}{suffix}"
+            )
             duplicate_index += 1
 
         return candidate
@@ -406,7 +413,11 @@ class DriveMirrorSync:
         self._remove_empty_directories()
         return deleted_files
 
-    def _list_folder_files(self, folder_id: str) -> list[DriveFile]:
+    def _list_folder_files(
+        self,
+        folder_id: str,
+        folder_parts: tuple[str, ...] = (),
+    ) -> list[DriveFile]:
         discovered_files: list[DriveFile] = []
         page_token: str | None = None
         query = f"'{folder_id}' in parents and trashed = false"
@@ -444,7 +455,13 @@ class DriveMirrorSync:
 
                 if mime_type == GOOGLE_FOLDER_MIME_TYPE:
                     if self.recursive:
-                        discovered_files.extend(self._list_folder_files(file_id))
+                        folder_segment = _sanitize_path_segment(name, file_id)
+                        discovered_files.extend(
+                            self._list_folder_files(
+                                file_id,
+                                (*folder_parts, folder_segment),
+                            )
+                        )
                     continue
 
                 modified_time_raw = str(item.get("modifiedTime", "")).strip()
@@ -467,7 +484,7 @@ class DriveMirrorSync:
                         name=name,
                         mime_type=mime_type,
                         modified_time=modified_time,
-                        folder_parts=(),
+                        folder_parts=folder_parts,
                     )
                 )
 
@@ -540,42 +557,69 @@ class DriveMirrorSync:
             trashed=trashed,
         )
 
-    def _is_within_source_folder(self, parents: tuple[str, ...]) -> bool:
-        if self.source_folder_id in parents:
-            return True
+    def _resolve_file_folder_parts(
+        self,
+        parents: tuple[str, ...],
+    ) -> tuple[str, ...] | None:
+        if not parents:
+            return None
 
+        candidate_paths: list[tuple[str, ...]] = []
         for parent_id in parents:
-            if self._folder_is_within_source(parent_id, set()):
-                return True
-        return False
+            folder_path = self._folder_path_from_source(parent_id, set())
+            if folder_path is None:
+                continue
+            candidate_paths.append(folder_path)
 
-    def _folder_is_within_source(self, folder_id: str, visiting: set[str]) -> bool:
+        if not candidate_paths:
+            return None
+
+        return min(candidate_paths, key=lambda path: (len(path), path))
+
+    def _folder_path_from_source(
+        self,
+        folder_id: str,
+        visiting: set[str],
+    ) -> tuple[str, ...] | None:
         if folder_id == self.source_folder_id:
-            return True
+            return ()
 
-        cached = self._folder_membership_cache.get(folder_id)
-        if cached is not None:
-            return cached
+        if folder_id in self._folder_path_cache:
+            return self._folder_path_cache[folder_id]
 
         if folder_id in visiting:
-            return False
+            return None
+
         visiting.add(folder_id)
+        try:
+            metadata = self._fetch_file_metadata(folder_id)
+            if (
+                metadata is None
+                or metadata.trashed
+                or metadata.mime_type != GOOGLE_FOLDER_MIME_TYPE
+            ):
+                result: tuple[str, ...] | None = None
+            elif not metadata.parents:
+                result = None
+            else:
+                parent_paths: list[tuple[str, ...]] = []
+                for parent_id in metadata.parents:
+                    parent_path = self._folder_path_from_source(parent_id, visiting)
+                    if parent_path is None:
+                        continue
+                    folder_segment = _sanitize_path_segment(
+                        metadata.name, metadata.file_id
+                    )
+                    parent_paths.append((*parent_path, folder_segment))
 
-        metadata = self._fetch_file_metadata(folder_id)
-        if metadata is None or metadata.trashed:
-            result = False
-        elif self.source_folder_id in metadata.parents:
-            result = True
-        elif not metadata.parents:
-            result = False
-        else:
-            result = any(
-                self._folder_is_within_source(parent_id, visiting)
-                for parent_id in metadata.parents
-            )
+                if not parent_paths:
+                    result = None
+                else:
+                    result = min(parent_paths, key=lambda path: (len(path), path))
+        finally:
+            visiting.remove(folder_id)
 
-        visiting.remove(folder_id)
-        self._folder_membership_cache[folder_id] = result
+        self._folder_path_cache[folder_id] = result
         return result
 
     def _get_start_page_token(self) -> str:

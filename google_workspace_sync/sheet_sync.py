@@ -17,22 +17,22 @@ INIT_DB_SQL_FILE_NAMES: tuple[str, ...] = (
 
 UPSERT_RESOURCES_SQL = """
 INSERT INTO public.resources (
-    nazov,
+    name,
     esp,
     pin,
     led,
     status,
-    vypozicane_komu,
+    borrowed_by,
     deleted
 )
 VALUES (%s, %s, %s, %s, %s, %s, false)
-ON CONFLICT (nazov)
+ON CONFLICT (name)
 DO UPDATE SET
     esp = EXCLUDED.esp,
     pin = EXCLUDED.pin,
     led = EXCLUDED.led,
     status = EXCLUDED.status,
-    vypozicane_komu = EXCLUDED.vypozicane_komu,
+    borrowed_by = EXCLUDED.borrowed_by,
     deleted = false,
     updated_at = now();
 """
@@ -42,7 +42,7 @@ UPDATE public.resources
 SET deleted = true,
     updated_at = now()
 WHERE deleted = false
-  AND NOT (nazov = ANY(%s));
+  AND NOT (name = ANY(%s));
 """
 
 MARK_ALL_RESOURCES_DELETED_SQL = """
@@ -53,7 +53,7 @@ WHERE deleted = false;
 """
 
 READ_RESOURCES_COLUMNS_SQL = """
-SELECT column_name, data_type, is_nullable
+SELECT column_name, data_type, is_nullable, udt_name
 FROM information_schema.columns
 WHERE table_schema = 'public' AND table_name = 'resources'
 ORDER BY ordinal_position;
@@ -67,33 +67,55 @@ WHERE schemaname = 'public' AND tablename = 'resources';
 
 EXPECTED_RESOURCE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("id", "integer", "NO"),
-    ("nazov", "text", "NO"),
+    ("name", "text", "NO"),
     ("esp", "text", "YES"),
     ("pin", "text", "YES"),
     ("led", "text", "YES"),
-    ("status", "text", "YES"),
-    ("vypozicane_komu", "text", "YES"),
+    ("status", "USER-DEFINED", "YES"),
+    ("borrowed_by", "text", "YES"),
     ("created_at", "timestamp with time zone", "NO"),
     ("updated_at", "timestamp with time zone", "NO"),
     ("deleted", "boolean", "NO"),
 )
 
+EXPECTED_RESOURCE_UDT_NAMES: dict[str, str] = {
+    "status": "resource_status",
+}
+
 REQUIRED_RESOURCE_INDEXES = frozenset(
     {
         "resources_pkey",
-        "resources_nazov_unique",
+        "resources_name_unique",
         "resources_not_deleted_idx",
     }
 )
 
 CANONICAL_SHEET_HEADERS: dict[str, str] = {
-    "NAME": "nazov",
+    "NAME": "name",
     "ESP": "esp",
     "PIN": "pin",
     "LED": "led",
     "STATUS": "status",
-    "BORROWED BY": "vypozicane_komu",
+    "BORROWED BY": "borrowed_by",
 }
+
+STATUS_VALUE_LOOKUP: dict[str, str] = {
+    "AVAILABLE": "AVAILABLE",
+    "VOLNE": "AVAILABLE",
+    "VOĽNÉ": "AVAILABLE",
+    "DOSTUPNE": "AVAILABLE",
+    "DOSTUPNÉ": "AVAILABLE",
+    "BORROWED": "BORROWED",
+    "POZICANE": "BORROWED",
+    "POŽIČANÉ": "BORROWED",
+    "VYPOZICANE": "BORROWED",
+    "VYPOŽIČANÉ": "BORROWED",
+    "LOST": "LOST",
+    "STRATENE": "LOST",
+    "STRATENÉ": "LOST",
+}
+
+ALLOWED_STATUS_VALUES = ("AVAILABLE", "BORROWED", "LOST")
 
 REQUIRED_HEADER_FIELDS = frozenset(CANONICAL_SHEET_HEADERS.values())
 
@@ -148,7 +170,7 @@ def validate_resources_schema(settings: Settings) -> None:
     ):
         cursor.execute(READ_RESOURCES_COLUMNS_SQL)
         raw_column_rows = cursor.fetchall()
-        column_rows = cast(list[tuple[str, str, str]], raw_column_rows)
+        column_rows = cast(list[tuple[str, str, str, str]], raw_column_rows)
 
         if not column_rows:
             raise ValueError(
@@ -157,8 +179,8 @@ def validate_resources_schema(settings: Settings) -> None:
             )
 
         found_columns = {
-            name: (data_type, is_nullable)
-            for name, data_type, is_nullable in column_rows
+            name: (data_type, is_nullable, udt_name)
+            for name, data_type, is_nullable, udt_name in column_rows
         }
         _validate_resource_columns(found_columns)
 
@@ -175,7 +197,7 @@ def validate_resources_schema(settings: Settings) -> None:
 
 
 def _validate_resource_columns(
-    found_columns: dict[str, tuple[str, str]],
+    found_columns: dict[str, tuple[str, str, str]],
 ) -> None:
     missing_columns: list[str] = []
     mismatched_columns: list[str] = []
@@ -186,11 +208,22 @@ def _validate_resource_columns(
             missing_columns.append(column_name)
             continue
 
-        found_type, found_nullable = column_meta
+        found_type, found_nullable, found_udt_name = column_meta
         if found_type != expected_type or found_nullable != expected_nullable:
             mismatched_columns.append(
                 f"{column_name} expected ({expected_type}, {expected_nullable}) "
                 f"got ({found_type}, {found_nullable})"
+            )
+            continue
+
+        expected_udt_name = EXPECTED_RESOURCE_UDT_NAMES.get(column_name)
+        if expected_udt_name is None:
+            continue
+
+        if found_udt_name != expected_udt_name:
+            mismatched_columns.append(
+                f"{column_name} expected udt_name={expected_udt_name} "
+                f"got udt_name={found_udt_name}"
             )
 
     if not missing_columns and not mismatched_columns:
@@ -321,28 +354,31 @@ class SheetSyncService:
                 skipped_rows += 1
                 continue
 
-            nazov = self._cell_by_header(row, header_index_map, "nazov")
+            name = self._cell_by_header(row, header_index_map, "name")
             esp = self._cell_by_header(row, header_index_map, "esp")
             pin = self._cell_by_header(row, header_index_map, "pin")
             led = self._cell_by_header(row, header_index_map, "led")
-            status = self._cell_by_header(row, header_index_map, "status")
-            vypozicane_komu = self._cell_by_header(
+            raw_status = self._cell_by_header(row, header_index_map, "status")
+            raw_borrowed_by = self._cell_by_header(
                 row,
                 header_index_map,
-                "vypozicane_komu",
+                "borrowed_by",
             )
 
-            if nazov == "":
+            if name == "":
                 skipped_rows += 1
                 continue
 
-            resources_by_name[nazov] = ResourceRow(
-                nazov=nazov,
+            status = _canonicalize_status(raw_status)
+            borrowed_by = _canonicalize_borrowed_by(raw_borrowed_by)
+
+            resources_by_name[name] = ResourceRow(
+                name=name,
                 esp=esp or None,
                 pin=pin or None,
                 led=led or None,
-                status=status or None,
-                vypozicane_komu=vypozicane_komu or None,
+                status=status,
+                borrowed_by=borrowed_by,
             )
 
         return list(resources_by_name.values()), skipped_rows
@@ -350,16 +386,16 @@ class SheetSyncService:
     def _persist_rows(self, rows: list[ResourceRow]) -> tuple[int, int]:
         upsert_params = [
             (
-                row.nazov,
+                row.name,
                 row.esp,
                 row.pin,
                 row.led,
                 row.status,
-                row.vypozicane_komu,
+                row.borrowed_by,
             )
             for row in rows
         ]
-        seen_names = [row.nazov for row in rows]
+        seen_names = [row.name for row in rows]
 
         with (
             open_postgres_connection(self.settings) as connection,
@@ -387,3 +423,26 @@ class SheetSyncService:
         if index >= len(row):
             return ""
         return row[index].strip()
+
+
+def _canonicalize_status(value: str) -> str | None:
+    if value == "":
+        return None
+
+    normalized = _normalize_header_name(value)
+    canonical = STATUS_VALUE_LOOKUP.get(normalized)
+    if canonical is None:
+        allowed_values = ", ".join(ALLOWED_STATUS_VALUES)
+        raise ValueError(
+            "Sheet sync failed: unknown STATUS value "
+            f"'{value}'. Allowed values are: {allowed_values}."
+        )
+
+    return canonical
+
+
+def _canonicalize_borrowed_by(value: str) -> str | None:
+    cleaned = value.strip()
+    if cleaned == "" or cleaned.casefold() == "nikto":
+        return None
+    return cleaned

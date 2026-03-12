@@ -9,7 +9,7 @@ dependencies = [
     "google-auth>=2.41.1",
     "google-auth-httplib2>=0.2.1",
     "google-auth-oauthlib>=1.2.3",
-    "psycopg[binary]>=3.2.3",
+    "psycopg2-binary>=2.9.9",
     "pydantic-settings>=2.13.1",
 ]
 

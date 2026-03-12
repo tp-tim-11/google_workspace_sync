@@ -1,0 +1,30 @@
+{
+  "files": {
+    "17wQpHRgfT1C16HTzTVlsl9eV2trRQRNxqfMgRoHnkZw": {
+      "doc_id": "dc3327ed8d366a1f5898d6264a1b08f7f579feaf",
+      "local_path": "Oprava bicykla s motorovou pilou.txt",
+      "modified_time": "2025-12-11T13:29:39.067000+00:00"
+    },
+    "1HTV7b2ZaDUfUaEKZrJP40ja30LHNjI_D3Hzum8aBWzg": {
+      "doc_id": "303d4d9a886168301eed639e84244fe33e50448f",
+      "local_path": "Oprava bicykla s kavovarom.txt",
+      "modified_time": "2025-12-11T13:30:01.562000+00:00"
+    },
+    "1LV8EE4dtVTnbxH5cdBC-52Lr9SDMcljK": {
+      "doc_id": "021d9ca9a2a41a53cccdf6c6b4040b6a4f7b2856",
+      "local_path": "nested_folder/diagnostika_kola.pdf",
+      "modified_time": "2025-11-06T14:21:10+00:00"
+    },
+    "1QywH1mJ0bxwjG5AuF6BETxqWNB3jThyX": {
+      "doc_id": "27553f10401a79277a6d05250cec9036a4e4f288",
+      "local_path": "manual_prevodovka.pdf",
+      "modified_time": "2025-11-06T14:21:10+00:00"
+    },
+    "1dxvVjtBBFjvYjj5Vj55y9I6jxZW6TNkV": {
+      "doc_id": "dd4e29b623b7079fbfc9647d6596ece96e7f1e1b",
+      "local_path": "manual_servis_brzdy.pdf",
+      "modified_time": "2025-11-06T14:21:10+00:00"
+    }
+  },
+  "version": 1
+}

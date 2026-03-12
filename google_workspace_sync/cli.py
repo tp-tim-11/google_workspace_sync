@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .drive_sync import DriveMirrorSync
 from .google_clients import build_drive_client, build_sheets_client
+from .ingest_sync import Uc2IngestService, load_drive_manifest
 from .settings import Settings, settings
 from .sheet_sync import (
     SheetSyncService,
@@ -65,14 +66,23 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
 
     if arguments.mode in {"drive", "all"}:
         _require_drive_folder_id(settings)
+        if settings.drive_ingest_enabled and not arguments.dry_run:
+            _require_database_settings(settings)
         drive_client = build_drive_client(settings)
         hard_delete = settings.drive_hard_delete and not arguments.no_hard_delete
+        drive_download_root = Path(settings.drive_download_root).expanduser()
+        drive_state_file = Path(settings.drive_state_file).expanduser()
+        previous_drive_manifest = (
+            load_drive_manifest(drive_state_file)
+            if settings.drive_ingest_enabled and not arguments.dry_run
+            else {}
+        )
 
         drive_sync = DriveMirrorSync(
             drive_client=drive_client,
             source_folder_id=settings.google_drive_documents_folder_id,
-            download_root=Path(settings.drive_download_root).expanduser(),
-            state_file=Path(settings.drive_state_file).expanduser(),
+            download_root=drive_download_root,
+            state_file=drive_state_file,
             recursive=settings.drive_recursive,
             hard_delete=hard_delete,
             dry_run=arguments.dry_run,
@@ -90,6 +100,29 @@ def run_sync(arguments: Namespace, settings: Settings) -> int:
 
         if drive_stats.failed_files > 0:
             exit_code = 1
+
+        if settings.drive_ingest_enabled and not arguments.dry_run:
+            if drive_stats.failed_files > 0:
+                print("[uc2-ingest] Skipped because drive sync reported failures.")
+            else:
+                current_drive_manifest = load_drive_manifest(drive_state_file)
+                ingest_service = Uc2IngestService(
+                    settings=settings,
+                    download_root=drive_download_root,
+                )
+                ingest_stats = ingest_service.sync(
+                    sync_mode=drive_stats.sync_mode,
+                    previous_manifest=previous_drive_manifest,
+                    current_manifest=current_drive_manifest,
+                )
+                print(
+                    "[uc2-ingest] "
+                    f"ingested={ingest_stats.ingested_files} "
+                    f"deleted={ingest_stats.deleted_docs} "
+                    f"failed={ingest_stats.failed_files}"
+                )
+                if ingest_stats.failed_files > 0:
+                    exit_code = 1
 
     if arguments.mode in {"sheet", "all"}:
         if arguments.dry_run:
@@ -163,7 +196,7 @@ def _require_database_settings(settings: Settings) -> None:
 
     if missing:
         raise ValueError(
-            f"Database settings missing for sheet sync/init-db: {', '.join(missing)}"
+            f"Database settings missing for sheet sync/init-db/drive ingest: {', '.join(missing)}"
         )
 
 

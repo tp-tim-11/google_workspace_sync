@@ -35,3 +35,10 @@ ALTER TABLE ONLY public.repair_records
 ADD CONSTRAINT repair_records_user_id_fkey
 FOREIGN KEY (user_id) REFERENCES public.users(id)
 NOT DEFERRABLE;
+
+ALTER TABLE ONLY public.resources
+ADD CONSTRAINT resources_borrowed_by_not_nikto_check
+CHECK (
+    borrowed_by IS NULL
+    OR upper(btrim(borrowed_by)) <> 'NIKTO'
+);

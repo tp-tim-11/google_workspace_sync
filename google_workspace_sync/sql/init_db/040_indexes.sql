@@ -25,12 +25,24 @@ ON public.repair_records USING btree (user_id, item_id);
 CREATE INDEX idx_repair_records_last_update
 ON public.repair_records USING btree (last_update DESC);
 
-CREATE UNIQUE INDEX resources_nazov_unique
-ON public.resources USING btree (nazov);
+CREATE UNIQUE INDEX resources_name_unique
+ON public.resources USING btree (name);
 
 CREATE INDEX resources_not_deleted_idx
-ON public.resources USING btree (nazov)
+ON public.resources USING btree (name)
 WHERE (deleted = false);
+
+CREATE INDEX doc_units_search_idx
+ON public.doc_units USING gin (search_vector);
+
+CREATE INDEX doc_units_doc_idx
+ON public.doc_units USING btree (doc_id);
+
+CREATE UNIQUE INDEX doc_units_unique_unit_idx
+ON public.doc_units USING btree (doc_id, unit_type, unit_no);
+
+CREATE INDEX doc_units_manual_name_idx
+ON public.doc_units USING btree (manual_name);
 
 CREATE UNIQUE INDEX users_email_key
 ON public.users USING btree (email);

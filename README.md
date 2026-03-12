@@ -12,6 +12,8 @@ Sheet sync behavior:
 - Requires all headers: `NAME`, `ESP`, `PIN`, `LED`, `STATUS`, `BORROWED BY`.
 - Ignores extra/unrecognized columns.
 - Column values may be empty; only header presence is required.
+- Canonicalizes `STATUS` to enum values: `AVAILABLE`, `BORROWED`, `LOST`.
+- Normalizes `BORROWED BY` value `NIKTO` to `NULL`.
 - Soft-deletes missing tools by setting `deleted=true`.
 - Fails safely if the sheet fetch is empty or the header row is missing.
 
@@ -22,7 +24,12 @@ Drive sync behavior:
 - Uses `changes.list` page tokens persisted in `DRIVE_STATE_FILE`.
 - Falls back to full reconcile when token is missing/invalid.
 - Recursively scans the configured documents folder ID for initial/full reconcile.
-- Flattens files from nested Drive subfolders directly into `DRIVE_DOWNLOAD_ROOT`.
+- Preserves nested Drive folder structure under `DRIVE_DOWNLOAD_ROOT`.
+- Runs UC2 ingest on every successful Drive sync when `DRIVE_INGEST_ENABLED=true`.
+- On full reconcile, truncates `doc_units` and re-ingests all currently mirrored files.
+- On incremental sync, ingests changed/new files and deletes `doc_units` entries for removed files.
+- If PageIndex ingest fails for a file, falls back to a single-chunk `doc_units` ingest for that file.
+- UC2 ingest subprocess runs in the current working directory (where you execute the command).
 
 ## Tooling
 
@@ -45,6 +52,15 @@ Optional Drive settings:
 - `DRIVE_STATE_FILE` (default: `./drive_sync_state.json`)
 - `DRIVE_RECURSIVE` (default: `true`)
 - `DRIVE_HARD_DELETE` (default: `true`)
+- `DRIVE_INGEST_ENABLED` (default: `true`)
+- `DRIVE_INGEST_STATE_FILE` (default: `./uc2_ingest_state.json`)
+- `KLUKY_MCP_PROJECT_ROOT` (default: `../kluky_mcp`)
+
+Required for Drive ingest when `DRIVE_INGEST_ENABLED=true`:
+- `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
+
+`kluky_mcp` ingest credentials (including OpenAI key) are read from
+`KLUKY_MCP_PROJECT_ROOT/.env`, so they do not need to be duplicated here.
 
 Required for Sheet sync:
 - `GOOGLE_SHEETS_ID`
