@@ -91,8 +91,9 @@ class Uc2IngestService:
         self.settings = settings
         self.download_root = download_root
         self.state_file = Path(settings.drive_ingest_state_file).expanduser()
-        self.kluky_project_root = Path(settings.kluky_mcp_project_root).expanduser()
-        self.command_cwd = Path.cwd().resolve()
+        self.kluky_project_root = (
+            Path(settings.kluky_mcp_project_root).expanduser().resolve()
+        )
         if not self.kluky_project_root.exists():
             raise ValueError(
                 f"KLUKY_MCP_PROJECT_ROOT does not exist: {self.kluky_project_root}"
@@ -101,6 +102,7 @@ class Uc2IngestService:
             raise ValueError(
                 f"KLUKY_MCP_PROJECT_ROOT is not a directory: {self.kluky_project_root}"
             )
+        self.command_cwd = self.kluky_project_root
 
     def sync(
         self,
