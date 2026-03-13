@@ -44,7 +44,7 @@ CREATE TYPE public.resource_status AS ENUM (
     'AVAILABLE',
     'BORROWED',
     'LOST',
-    'BROKEN',
+    'BROKEN'
 );
 
 CREATE TABLE public.resources (

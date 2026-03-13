@@ -113,6 +113,9 @@ STATUS_VALUE_LOOKUP: dict[str, str] = {
     "LOST": "LOST",
     "STRATENE": "LOST",
     "STRATENÉ": "LOST",
+    "BROKEN": "BROKEN",
+    "ROZBITÉ": "BROKEN",
+    "POKAZENÉ": "BROKEN",
 }
 
 ALLOWED_STATUS_VALUES = ("AVAILABLE", "BORROWED", "BROKEN", "LOST")
