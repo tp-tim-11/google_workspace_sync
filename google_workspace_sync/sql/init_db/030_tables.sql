@@ -43,7 +43,8 @@ CREATE TABLE public.repair_records (
 CREATE TYPE public.resource_status AS ENUM (
     'AVAILABLE',
     'BORROWED',
-    'LOST'
+    'LOST',
+    'BROKEN',
 );
 
 CREATE TABLE public.resources (

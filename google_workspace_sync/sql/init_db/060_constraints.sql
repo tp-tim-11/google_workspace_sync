@@ -40,5 +40,4 @@ ALTER TABLE ONLY public.resources
 ADD CONSTRAINT resources_borrowed_by_not_nikto_check
 CHECK (
     borrowed_by IS NULL
-    OR upper(btrim(borrowed_by)) <> 'NIKTO'
 );
