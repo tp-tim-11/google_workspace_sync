@@ -1,0 +1,44 @@
+name: Post GIF on Commit
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send GIF + text to Discord webhook
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ACTOR: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          GIFS=(
+            "https://tenor.com/view/squirtle-bulbasaur-teamwork-rope-pull-determined-gif-17472920"
+            "https://tenor.com/view/pull-a-week-away-tug-of-war-pull-hard-netflix-gif-20583373"
+            "https://tenor.com/view/deepwoken-duke-kirobetter-aeloria-guild-gif-6656734504190792321"
+            "https://tenor.com/view/you-gotta-pull-me-matty-matheson-bacon-whiskey-pork-roast-feat-brad-leone-pull-me-you-must-drag-me-gif-26361359"
+            "https://tenor.com/view/merge-wreck-it-ralph-gif-5750749"
+            "https://tenor.com/view/git-pull-git-pull-github-gif-541349033162282973"
+          )
+
+          RANDOM_GIF="${GIFS[$RANDOM % ${#GIFS[@]}]}"
+          SHORT_SHA="${SHA::7}"
+
+          payload=$(jq -n \
+            --arg repo "$REPO" \
+            --arg actor "$ACTOR" \
+            --arg sha "$SHORT_SHA" \
+            --arg msg "$MSG" \
+            --arg gif "$RANDOM_GIF" \
+            '{content: ("🚀 **" + $repo + "** push by **" + $actor + "** (`" + $sha + "`)\n" + $msg + "\n" + $gif)}')
+
+          curl -sS -H "Content-Type: application/json" \
+            -X POST \
+            -d "$payload" \
+            "$DISCORD_WEBHOOK_URL"
