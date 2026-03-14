@@ -8,7 +8,7 @@ from .settings import Settings
 
 _GOOGLE_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
 )
 
 

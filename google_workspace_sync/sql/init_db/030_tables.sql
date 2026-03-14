@@ -85,6 +85,25 @@ CREATE TABLE public.doc_units (
     CONSTRAINT doc_units_pkey PRIMARY KEY (id)
 );
 
+CREATE TABLE public.drive_documents (
+    source_folder_id text NOT NULL,
+    file_id text NOT NULL,
+    doc_id text,
+    local_path text NOT NULL,
+    mime_type text NOT NULL,
+    sync_token text,
+    modified_time timestamptz,
+    synced_at timestamptz DEFAULT now() NOT NULL,
+    ingested_at timestamptz,
+    ingest_status text DEFAULT 'pending' NOT NULL,
+    ingest_error text,
+    deleted boolean DEFAULT false NOT NULL,
+    CONSTRAINT drive_documents_pkey PRIMARY KEY (source_folder_id, file_id),
+    CONSTRAINT drive_documents_ingest_status_check CHECK (
+        ingest_status IN ('pending', 'ok', 'failed', 'skipped')
+    )
+);
+
 CREATE TABLE public.users (
     id serial NOT NULL,
     first_name text NOT NULL,

@@ -10,3 +10,26 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+
+CREATE FUNCTION public.notify_resources_changed()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF current_setting('gws.sync_origin', true) = 'sheet_pull' THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+
+  PERFORM pg_notify(
+    'resources_changed',
+    json_build_object(
+      'operation',
+      TG_OP,
+      'name',
+      COALESCE(NEW.name, OLD.name)
+    )::text
+  );
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;

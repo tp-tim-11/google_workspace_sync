@@ -44,6 +44,15 @@ ON public.doc_units USING btree (doc_id, unit_type, unit_no);
 CREATE INDEX doc_units_manual_name_idx
 ON public.doc_units USING btree (manual_name);
 
+CREATE INDEX drive_documents_doc_id_idx
+ON public.drive_documents USING btree (doc_id);
+
+CREATE INDEX drive_documents_source_synced_idx
+ON public.drive_documents USING btree (source_folder_id, synced_at DESC);
+
+CREATE INDEX drive_documents_active_idx
+ON public.drive_documents USING btree (source_folder_id, deleted);
+
 CREATE UNIQUE INDEX users_email_key
 ON public.users USING btree (email);
 

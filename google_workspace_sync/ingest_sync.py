@@ -12,8 +12,6 @@ from .models import IngestSyncStats
 from .postgres import open_postgres_connection
 from .settings import Settings
 
-INGEST_STATE_VERSION = 1
-
 PRIMARY_INGEST_PY = (
     "import sys; "
     "from kluky_mcp.tools.uc02_utils.pageIndexPipeline import ingest_with_pageindex; "
@@ -24,13 +22,6 @@ PRIMARY_INGEST_PY = (
 @dataclass(frozen=True, slots=True)
 class DriveManifestEntry:
     file_id: str
-    local_path: str
-    modified_time: str
-
-
-@dataclass(frozen=True, slots=True)
-class IngestedFileState:
-    doc_id: str
     local_path: str
     modified_time: str
 
@@ -90,7 +81,6 @@ class Uc2IngestService:
     ) -> None:
         self.settings = settings
         self.download_root = download_root
-        self.state_file = Path(settings.drive_ingest_state_file).expanduser()
         self.kluky_project_root = (
             Path(settings.kluky_mcp_project_root).expanduser().resolve()
         )
@@ -111,15 +101,12 @@ class Uc2IngestService:
         previous_manifest: dict[str, DriveManifestEntry],
         current_manifest: dict[str, DriveManifestEntry],
     ) -> IngestSyncStats:
-        ingest_state = self._load_ingest_state_safely()
-
         if sync_mode == "full_reconcile":
             return self._sync_full_reconcile(current_manifest)
 
         return self._sync_incremental(
             previous_manifest=previous_manifest,
             current_manifest=current_manifest,
-            ingest_state=ingest_state,
         )
 
     def _sync_full_reconcile(
@@ -129,27 +116,17 @@ class Uc2IngestService:
         stats = IngestSyncStats()
         self._truncate_doc_units()
 
-        next_state: dict[str, IngestedFileState] = {}
         ingest_results = self._ingest_manifest_entries(
             sorted(current_manifest.items()),
             phase_label="full-reconcile",
         )
 
         for ingest_result in ingest_results:
-            file_id = ingest_result.file_id
-            entry = ingest_result.entry
             if ingest_result.success:
                 stats.ingested_files += 1
-                doc_id = _stable_doc_id_from_doc_key(file_id)
-                next_state[file_id] = IngestedFileState(
-                    doc_id=doc_id,
-                    local_path=entry.local_path,
-                    modified_time=entry.modified_time,
-                )
             else:
                 stats.failed_files += 1
 
-        self._save_ingest_state(next_state)
         return stats
 
     def _sync_incremental(
@@ -157,16 +134,14 @@ class Uc2IngestService:
         *,
         previous_manifest: dict[str, DriveManifestEntry],
         current_manifest: dict[str, DriveManifestEntry],
-        ingest_state: dict[str, IngestedFileState],
     ) -> IngestSyncStats:
         stats = IngestSyncStats()
 
-        removed_file_ids = sorted(set(ingest_state) - set(current_manifest))
+        removed_file_ids = sorted(set(previous_manifest) - set(current_manifest))
         for file_id in removed_file_ids:
-            old_state = ingest_state.pop(file_id)
-            doc_id = old_state.doc_id or _stable_doc_id_from_doc_key(file_id)
-            self._delete_doc_units_for_doc_id(doc_id)
-            stats.deleted_docs += 1
+            doc_id = _stable_doc_id_from_doc_key(file_id)
+            if self._delete_doc_units_for_doc_id(doc_id):
+                stats.deleted_docs += 1
 
         changed_file_ids = {
             file_id
@@ -174,10 +149,17 @@ class Uc2IngestService:
             if _manifest_changed(previous_manifest.get(file_id), current_entry)
         }
 
+        doc_ids_by_file_id = {
+            file_id: _stable_doc_id_from_doc_key(file_id)
+            for file_id in current_manifest
+        }
+        existing_doc_ids = self._fetch_existing_doc_ids(
+            set(doc_ids_by_file_id.values())
+        )
         retry_file_ids = {
             file_id
-            for file_id, current_entry in current_manifest.items()
-            if _ingest_state_stale(ingest_state.get(file_id), current_entry)
+            for file_id, doc_id in doc_ids_by_file_id.items()
+            if doc_id not in existing_doc_ids
         }
 
         ingest_file_ids = sorted(changed_file_ids | retry_file_ids)
@@ -188,20 +170,11 @@ class Uc2IngestService:
         )
 
         for ingest_result in ingest_results:
-            file_id = ingest_result.file_id
-            current_entry = ingest_result.entry
             if ingest_result.success:
                 stats.ingested_files += 1
-                doc_id = _stable_doc_id_from_doc_key(file_id)
-                ingest_state[file_id] = IngestedFileState(
-                    doc_id=doc_id,
-                    local_path=current_entry.local_path,
-                    modified_time=current_entry.modified_time,
-                )
             else:
                 stats.failed_files += 1
 
-        self._save_ingest_state(ingest_state)
         return stats
 
     def _run_kluky_ingest(self, entry: DriveManifestEntry, file_id: str) -> bool:
@@ -394,7 +367,7 @@ class Uc2IngestService:
         ):
             cursor.execute("TRUNCATE TABLE public.doc_units;")
 
-    def _delete_doc_units_for_doc_id(self, doc_id: str) -> None:
+    def _delete_doc_units_for_doc_id(self, doc_id: str) -> bool:
         with (
             open_postgres_connection(self.settings) as connection,
             connection.cursor() as cursor,
@@ -403,76 +376,31 @@ class Uc2IngestService:
                 "DELETE FROM public.doc_units WHERE doc_id = %s",
                 (doc_id,),
             )
+            return cursor.rowcount > 0
 
-    def _load_ingest_state_safely(self) -> dict[str, IngestedFileState]:
-        try:
-            return self._load_ingest_state()
-        except Exception as error:
-            print(
-                "[uc2-ingest] Failed to read state file "
-                f"{self.state_file}: {error}. Starting with empty ingest state."
+    def _fetch_existing_doc_ids(self, doc_ids: set[str]) -> set[str]:
+        if not doc_ids:
+            return set()
+
+        with (
+            open_postgres_connection(self.settings) as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.execute(
+                "SELECT DISTINCT doc_id FROM public.doc_units WHERE doc_id = ANY(%s)",
+                (list(doc_ids),),
             )
-            return {}
+            rows = cursor.fetchall()
 
-    def _load_ingest_state(self) -> dict[str, IngestedFileState]:
-        if not self.state_file.exists():
-            return {}
-
-        raw_text = self.state_file.read_text(encoding="utf-8")
-        payload = json.loads(raw_text)
-        if not isinstance(payload, dict):
-            raise ValueError("state file root must be a JSON object")
-
-        version = payload.get("version")
-        if not isinstance(version, int) or version != INGEST_STATE_VERSION:
-            raise ValueError(
-                f"ingest state version mismatch: expected {INGEST_STATE_VERSION}, got {version}"
-            )
-
-        files_raw = payload.get("files", {})
-        if not isinstance(files_raw, dict):
-            raise ValueError("state.files must be an object")
-
-        state: dict[str, IngestedFileState] = {}
-        for file_id_raw, entry_raw in files_raw.items():
-            file_id = str(file_id_raw).strip()
-            if file_id == "" or not isinstance(entry_raw, dict):
+        existing_doc_ids: set[str] = set()
+        for row in rows:
+            if not row:
                 continue
+            doc_id = str(row[0]).strip()
+            if doc_id:
+                existing_doc_ids.add(doc_id)
 
-            doc_id = str(entry_raw.get("doc_id", "")).strip()
-            local_path = str(entry_raw.get("local_path", "")).strip()
-            modified_time = str(entry_raw.get("modified_time", "")).strip()
-            if doc_id == "" or local_path == "" or modified_time == "":
-                continue
-
-            state[file_id] = IngestedFileState(
-                doc_id=doc_id,
-                local_path=local_path,
-                modified_time=modified_time,
-            )
-
-        return state
-
-    def _save_ingest_state(self, state: dict[str, IngestedFileState]) -> None:
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": INGEST_STATE_VERSION,
-            "files": {
-                file_id: {
-                    "doc_id": entry.doc_id,
-                    "local_path": entry.local_path,
-                    "modified_time": entry.modified_time,
-                }
-                for file_id, entry in state.items()
-            },
-        }
-
-        temp_path = self.state_file.with_suffix(f"{self.state_file.suffix}.tmp")
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        temp_path.replace(self.state_file)
+        return existing_doc_ids
 
 
 def _manifest_changed(
@@ -486,19 +414,6 @@ def _manifest_changed(
         return True
 
     return previous.local_path != current.local_path
-
-
-def _ingest_state_stale(
-    ingest_state: IngestedFileState | None,
-    current: DriveManifestEntry,
-) -> bool:
-    if ingest_state is None:
-        return True
-
-    if ingest_state.modified_time != current.modified_time:
-        return True
-
-    return ingest_state.local_path != current.local_path
 
 
 def _stable_doc_id_from_doc_key(doc_key: str) -> str:

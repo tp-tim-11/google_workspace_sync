@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_sslmode: str = "prefer"
     db_pool_mode: str = "session"
+    sheet_push_poll_timeout_seconds: float = 30.0
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
 

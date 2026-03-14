@@ -1,37 +1,42 @@
 # google_workspace_sync
 
-Cron-friendly pull sync for Google Workspace:
-- Mirrors files from a specific Google Drive documents folder ID.
-- Optionally syncs a Google Sheet into PostgreSQL `resources` table.
+Cron-friendly Google Workspace + PostgreSQL sync tool.
 
-This implementation is pull-based. It does not rely on Drive webhooks.
-Drive sync uses the Drive Changes API with a persisted token/state file.
+Current capabilities:
+- Drive -> local mirror (with Drive Changes API token cursor)
+- Drive mirror -> UC2 ingest (`kluky_mcp` / `doc_units`)
+- Sheet -> DB (`resources` table)
+- DB (`resources`) -> Sheet (one-shot or listener)
 
-Sheet sync behavior:
-- Uses strict canonical headers.
-- Requires all headers: `NAME`, `ESP`, `PIN`, `LED`, `STATUS`, `BORROWED BY`.
-- Ignores extra/unrecognized columns.
-- Column values may be empty; only header presence is required.
-- Canonicalizes `STATUS` to enum values: `AVAILABLE`, `BORROWED`, `LOST`.
-- Normalizes `BORROWED BY` value `NIKTO` to `NULL`.
-- Soft-deletes missing tools by setting `deleted=true`.
-- Fails safely if the sheet fetch is empty or the header row is missing.
+This implementation is pull-oriented and does not use Drive webhooks.
 
-Recommended sheet header template:
-- `NAME, ESP, PIN, LED, STATUS, BORROWED BY`
+## Current behavior
 
-Drive sync behavior:
-- Uses `changes.list` page tokens persisted in `DRIVE_STATE_FILE`.
-- Falls back to full reconcile when token is missing/invalid.
-- Recursively scans the configured documents folder ID for initial/full reconcile.
-- Preserves nested Drive folder structure under `DRIVE_DOWNLOAD_ROOT`.
-- Exports Google-native files (Docs/Sheets/Slides) as PDF into the local mirror.
-- Runs UC2 ingest on every successful Drive sync when `DRIVE_INGEST_ENABLED=true`.
-- On full reconcile, truncates `doc_units` and re-ingests all currently mirrored files.
-- On incremental sync, ingests changed/new files and deletes `doc_units` entries for removed files.
-- Uses only primary `kluky_mcp` PageIndex ingest; any ingest failure is reported as failure.
-- Logs ingest queue/start/finish per file with elapsed time.
-- UC2 ingest subprocess runs in the current working directory (where you execute the command).
+Drive sync:
+- Uses `changes.list` with persisted state in `DRIVE_STATE_FILE`.
+- Falls back to full reconcile when token/state is missing or invalid.
+- Mirrors nested folders under `DRIVE_DOWNLOAD_ROOT`.
+- Exports Google-native files (Docs/Sheets/Slides) as PDF into the mirror.
+
+UC2 ingest:
+- Runs after successful Drive sync when `DRIVE_INGEST_ENABLED=true`.
+- Uses only primary `kluky_mcp` PageIndex ingest (no secondary fallback ingest path).
+- On full reconcile, truncates `public.doc_units` then re-ingests all mirrored files.
+- On incremental sync, ingests changed/new files and deletes units for removed files.
+- Ingest truth source is DB (`doc_units`), not ingest JSON state.
+- Ingest subprocess runs with `cwd=KLUKY_MCP_PROJECT_ROOT`.
+
+Sheet -> DB sync (`sync --mode sheet`):
+- Strict headers required: `NAME, ESP, PIN, LED, STATUS, BORROWED BY`.
+- Ignores unknown extra columns.
+- Canonicalizes `STATUS` to enum values (`AVAILABLE`, `BORROWED`, `BROKEN`, `LOST`).
+- Normalizes `BORROWED BY=NIKTO` to `NULL`.
+- Soft-deletes missing tools (`deleted=true`).
+
+DB -> Sheet push:
+- One-shot push: `sync --mode sheet-push`.
+- Continuous listener: `watch-sheet-push` (LISTEN/NOTIFY).
+- Listener ensures the `resources` notify trigger/function exists.
 
 ## Tooling
 
@@ -45,9 +50,11 @@ uv sync
 
 Settings are loaded via `pydantic-settings` from `.env`.
 
+Required for all Google operations:
+- `GOOGLE_SERVICE_ACCOUNT_CREDENTIALS_FILE`
+
 Required for Drive sync:
-- `GOOGLE_SERVICE_ACCOUNT_CREDENTIALS_FILE` (path to service account JSON)
-- `GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID` (Drive folder ID to mirror)
+- `GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID`
 
 Optional Drive settings:
 - `DRIVE_DOWNLOAD_ROOT` (default: `./drive_mirror`)
@@ -55,55 +62,67 @@ Optional Drive settings:
 - `DRIVE_RECURSIVE` (default: `true`)
 - `DRIVE_HARD_DELETE` (default: `true`)
 - `DRIVE_INGEST_ENABLED` (default: `true`)
-- `DRIVE_INGEST_STATE_FILE` (default: `./uc2_ingest_state.json`)
 - `DRIVE_INGEST_WORKERS` (default: `2`)
 - `KLUKY_MCP_PROJECT_ROOT` (default: `../kluky_mcp`)
 
-Required for Drive ingest when `DRIVE_INGEST_ENABLED=true`:
+Required when Drive ingest is enabled:
 - `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
 
-`kluky_mcp` ingest credentials (including OpenAI key) are read from
-`KLUKY_MCP_PROJECT_ROOT/.env`, so they do not need to be duplicated here.
+`kluky_mcp` credentials (including OpenAI values) are read from
+`KLUKY_MCP_PROJECT_ROOT/.env`.
 
-Required for Sheet sync:
+Required for sheet sync/push/watch:
 - `GOOGLE_SHEETS_ID`
-- `DB_HOST`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
+- `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`
 
-Optional Sheet settings:
- - `GOOGLE_SHEETS_RANGE` (default: `Sheet1!A:F`)
+Optional sheet settings:
+- `GOOGLE_SHEETS_RANGE` (default: `Sheet1!A:F`)
+- `SHEET_PUSH_POLL_TIMEOUT_SECONDS` (default: `30`)
 - `DB_PORT` (default: `5432`)
 - `DB_SSLMODE` (default: `prefer`)
 
+Note: `DRIVE_INGEST_STATE_FILE` remains in settings/env template for compatibility,
+but ingest state tracking is now DB-driven.
+
 ## Commands
 
-Run Drive pull sync:
+Drive sync + ingest:
 
 ```bash
 uv run google-workspace-sync sync --mode drive
 ```
 
-Force full Drive reconcile (ignore token state for one run):
+Force full reconcile:
 
 ```bash
 uv run google-workspace-sync sync --mode drive --full-reconcile
 ```
 
-Run Sheet sync:
+Sheet -> DB:
 
 ```bash
 uv run google-workspace-sync sync --mode sheet
 ```
 
-Run both:
+DB -> Sheet (one-shot):
+
+```bash
+uv run google-workspace-sync sync --mode sheet-push
+```
+
+DB -> Sheet (continuous listener):
+
+```bash
+uv run google-workspace-sync watch-sheet-push
+```
+
+Run drive + sheet pull in one command (`all` does not start the listener):
 
 ```bash
 uv run google-workspace-sync sync --mode all
 ```
 
-Reset and recreate DB schema for Sheet sync (destructive):
+Reset/recreate DB schema (destructive):
 
 ```bash
 uv run google-workspace-sync init-db
@@ -115,21 +134,25 @@ Alias:
 uv run google-workspace-sync init
 ```
 
-`init-db`/`init` is the only command that executes schema reset SQL.
-Normal sync commands never run the full schema reset.
+## Schema notes
 
-The schema SQL is split into editable files under
-`google_workspace_sync/sql/init_db/`.
+`init-db` creates all sync-related tables, including:
+- `resources` (sheet mirror target)
+- `doc_units` (UC2 ingest units)
+- `drive_documents` (drive file mapping + sync token/ingest status metadata)
 
-## Cron example
+Schema SQL files are under `google_workspace_sync/sql/init_db/`.
 
-Every 5 minutes, mirror Drive folder with hard delete:
+## Cron
+
+Every 5 minutes:
 
 ```cron
 */5 * * * * cd /home/adamveres/Projects/team-project/google_workspace_sync && uv run google-workspace-sync sync --mode drive >> /var/log/google_workspace_sync.log 2>&1
 ```
 
-If you need to keep local leftovers for one run, pass `--no-hard-delete`.
+If you need DB -> Sheet near-real-time updates, run `watch-sheet-push` as a
+separate long-running process (systemd/tmux/supervisor/etc.).
 
 Managed cron helper scripts:
 
