@@ -341,12 +341,16 @@ class Uc2IngestService:
         env = dict(os.environ)
         env.pop("VIRTUAL_ENV", None)
         for key in (
-            "open_ai_api_key",
             "OPENAI_API_KEY",
+            "openai_api_key",
+            "OPEN_AI_API_KEY",
+            "open_ai_api_key",
             "CHATGPT_API_KEY",
-            "open_ai_api_base",
-            "OPENAI_BASE_URL",
             "OPENAI_API_BASE",
+            "OPENAI_BASE_URL",
+            "openai_api_base",
+            "OPEN_AI_API_BASE",
+            "open_ai_api_base",
             "PAGEINDEX_MODEL",
         ):
             env.pop(key, None)
