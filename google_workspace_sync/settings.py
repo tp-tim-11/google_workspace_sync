@@ -1,5 +1,7 @@
 """Application settings."""
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,7 +30,11 @@ class Settings(BaseSettings):
     db_pool_mode: str = "session"
     sheet_push_poll_timeout_seconds: float = 30.0
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_prefix="",
+        extra="ignore",
+    )
 
 
 settings = Settings()
