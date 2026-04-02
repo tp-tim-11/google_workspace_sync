@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     sheet_push_poll_timeout_seconds: float = 30.0
 
     model_config = SettingsConfigDict(
-        env_file=str(Path(__file__).resolve().parent.parent.parent / ".env"),
+        env_file=str(Path(__file__).resolve().parent.parent / ".env"),
         env_prefix="",
         extra="ignore",
     )
