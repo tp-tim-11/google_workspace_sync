@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     drive_ingest_workers: int = 2
     kluky_mcp_project_root: str = "../kluky_mcp"
 
-    db_host: str = "aws-1-eu-west-1.pooler.supabase.com"
+    db_host: str = "aws-1-eu-central-1.pooler.supabase.com"
     db_port: int = 5432
     db_name: str = "postgres"
-    db_user: str = "postgres.szejlmlpxxinjwgcpqqp"
+    db_user: str = "postgres.ithjwzgosdbeemjojbcl"
     db_password: str = ""
     db_sslmode: str = "prefer"
     db_pool_mode: str = "session"
